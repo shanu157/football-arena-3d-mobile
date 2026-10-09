@@ -326,6 +326,312 @@ $('sprint').addEventListener('pointerdown',e=>{e.preventDefault();sprintTouch=tr
 $('reset').onclick=()=>{scoreYou=scoreCpu=0;remaining=180;$('score').textContent='YOU 0 — 0 CPU';resetPositions();show('KICK OFF')};
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
 })();
+
+/* REALISTIC_LOW_POLY_PLAYERS_V1 */
+(function installLightweightFootballers() {
+  if (typeof THREE === "undefined" || typeof movePlayer !== "function") {
+    console.warn("Footballer upgrade skipped: Three.js or movePlayer unavailable.");
+    return;
+  }
+
+  const originalMovePlayer = movePlayer;
+  const animatedPlayers = new WeakMap();
+  const clock = new THREE.Clock();
+
+  function material(color, roughness = 0.82) {
+    return new THREE.MeshStandardMaterial({
+      color: color,
+      roughness: roughness,
+      metalness: 0
+    });
+  }
+
+  function makeMesh(geometry, mat, parent, x, y, z) {
+    const mesh = new THREE.Mesh(geometry, mat);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    parent.add(mesh);
+    return mesh;
+  }
+
+  function cylinder(a, b, radiusTop, radiusBottom, mat, parent, x, y, z) {
+    const mesh = makeMesh(
+      new THREE.CylinderGeometry(radiusTop, radiusBottom, b, 7, 1),
+      mat, parent, x, y, z
+    );
+    return mesh;
+  }
+
+  function buildFootballer(p) {
+    if (!p || !p.g || !p.g.isObject3D) return null;
+    if (animatedPlayers.has(p)) return animatedPlayers.get(p);
+
+    const root = p.g;
+    const oldChildren = [...root.children];
+    for (const child of oldChildren) {
+      root.remove(child);
+      child.traverse?.(obj => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+          else obj.material.dispose();
+        }
+      });
+    }
+
+    // Identify teams from the existing match arrays when available.
+    let isHome = false;
+    try {
+      isHome = (typeof you !== "undefined" && p === you) ||
+               (typeof home !== "undefined" && home.includes(p));
+    } catch (_) {}
+
+    const shirt = material(isHome ? 0x1674d1 : 0xd92e38);
+    const shorts = material(isHome ? 0x102d58 : 0xf0f0f0);
+    const skin = material(0xb9815b);
+    const socks = material(isHome ? 0xf4f6ff : 0xf5f5f5);
+    const boots = material(0x20242b);
+    const trim = material(isHome ? 0xf6f8ff : 0xffd34d);
+
+    const body = new THREE.Group();
+    root.add(body);
+
+    // Low-poly body proportions, measured in approximate game units.
+    cylinder(0.43, 0.48, 0.19, 0.23, shorts, body, 0, 0.79, 0);
+    cylinder(0.47, 0.57, 0.205, 0.16, shirt, body, 0, 1.08, 0);
+
+    // Neck and head.
+    cylinder(0.09, 0.10, 0.055, 0.06, skin, body, 0, 1.39, 0);
+    makeMesh(new THREE.SphereGeometry(0.115, 8, 6), skin, body, 0, 1.52, 0);
+    makeMesh(
+      new THREE.SphereGeometry(0.119, 8, 5),
+      material(0x28201b), body, 0, 1.585, -0.006
+    ).scale.set(1, 0.48, 1);
+
+    // Collar detail.
+    cylinder(0.025, 0.035, 0.08, 0.08, trim, body, 0, 1.365, 0);
+
+    // Number-like shirt stripe: cheap geometry, no textures.
+    makeMesh(
+      new THREE.BoxGeometry(0.045, 0.16, 0.012),
+      trim, body, 0, 1.12, 0.164
+    );
+
+    const legs = [];
+    for (const side of [-1, 1]) {
+      const hip = new THREE.Group();
+      hip.position.set(side * 0.105, 0.79, 0);
+      body.add(hip);
+      cylinder(0.25, 0.29, 0.075, 0.065, shorts, hip, 0, -0.13, 0);
+
+      const lower = new THREE.Group();
+      lower.position.set(0, -0.27, 0);
+      hip.add(lower);
+      cylinder(0.23, 0.24, 0.048, 0.038, socks, lower, 0, -0.12, 0);
+
+      makeMesh(
+        new THREE.BoxGeometry(0.09, 0.055, 0.16),
+        boots, lower, 0, -0.245, 0.035
+      );
+      legs.push({ hip, lower, side });
+    }
+
+    const arms = [];
+    for (const side of [-1, 1]) {
+      const shoulder = new THREE.Group();
+      shoulder.position.set(side * 0.215, 1.24, 0);
+      body.add(shoulder);
+
+      const upper = cylinder(0.20, 0.22, 0.065, 0.045, shirt,
+                             shoulder, 0, -0.105, 0);
+      upper.rotation.z = side * -0.12;
+
+      const forearm = cylinder(0.17, 0.19, 0.043, 0.032, skin,
+                               shoulder, side * 0.025, -0.29, 0.005);
+      forearm.rotation.z = side * -0.08;
+      arms.push({ shoulder, side });
+    }
+
+    // Small shoulder trim and shirt-side details.
+    for (const side of [-1, 1]) {
+      makeMesh(
+        new THREE.BoxGeometry(0.035, 0.13, 0.025),
+        trim, body, side * 0.17, 1.13, 0.12
+      );
+    }
+
+    const model = { body, legs, arms, phase: Math.random() * 6.28 };
+    animatedPlayers.set(p, model);
+    return model;
+  }
+
+  function animateFootballer(p) {
+    const model = buildFootballer(p);
+    if (!model) return;
+
+    const t = clock.elapsedTime + model.phase;
+    // Swing limbs in opposition for a readable running cycle.
+    for (const leg of model.legs) {
+      leg.hip.rotation.x = Math.sin(t * 10 + (leg.side < 0 ? 0 : Math.PI)) * 0.52;
+      leg.lower.rotation.x = Math.max(
+        0, Math.sin(t * 10 + (leg.side < 0 ? 0 : Math.PI) + 1.1)
+      ) * 0.62;
+    }
+    for (const arm of model.arms) {
+      arm.shoulder.rotation.x =
+        Math.sin(t * 10 + (arm.side < 0 ? Math.PI : 0)) * 0.38;
+      arm.shoulder.rotation.z = arm.side * 0.08;
+    }
+    model.body.position.y = Math.abs(Math.sin(t * 10)) * 0.025;
+  }
+
+  // Keep the existing movement and physics function intact.
+  movePlayer = function(p, ...args) {
+    const result = originalMovePlayer.call(this, p, ...args);
+    if (p) animateFootballer(p);
+    return result;
+  };
+
+  console.info("Lightweight low-poly footballer models installed.");
+})();
+
+
+/* ARENA_SCORE_CAMERA_CONTROL_MARKER_V1 */
+(function arenaScoreCameraControlUpgrade() {
+  const style = document.createElement("style");
+  style.textContent = `
+    #arena-tv-score {
+      position: fixed !important;
+      top: max(10px, env(safe-area-inset-top)) !important;
+      left: max(10px, env(safe-area-inset-left)) !important;
+      right: auto !important;
+      bottom: auto !important;
+      transform: none !important;
+      z-index: 10000 !important;
+      max-width: min(78vw, 330px) !important;
+      box-sizing: border-box !important;
+      padding: 11px 15px !important;
+      border: 1px solid rgba(255,255,255,.35) !important;
+      border-left: 4px solid #53e3a5 !important;
+      border-radius: 8px !important;
+      background: rgba(8,18,27,.94) !important;
+      color: #fff !important;
+      font: 700 17px/1.35 system-ui, sans-serif !important;
+      letter-spacing: .5px !important;
+      text-align: left !important;
+      box-shadow: 0 4px 18px rgba(0,0,0,.3) !important;
+      pointer-events: none !important;
+    }
+  `;
+  document.head.appendChild(style);
+
+  function findScoreboard() {
+    const candidates = [...document.querySelectorAll("body *")].filter(el => {
+      if (!el || el.id === "arena-tv-score") return false;
+      const text = (el.innerText || "").trim();
+      return /\bYOU\b/i.test(text) && /\bCPU\b/i.test(text) &&
+             text.length < 100;
+    });
+
+    // Prefer the smallest container that includes both team labels.
+    candidates.sort((a, b) =>
+      (a.innerText || "").length - (b.innerText || "").length
+    );
+    return candidates[0] || null;
+  }
+
+  function styleScoreboard() {
+    let el = document.getElementById("arena-tv-score");
+    if (!el) {
+      const old = findScoreboard();
+      if (!old) return;
+
+      // Move the existing scoreboard node so its score updates remain live.
+      el = old;
+      el.id = "arena-tv-score";
+    }
+
+    // Change labels in text nodes only; preserve score and timer elements.
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+
+    for (const node of nodes) {
+      if (!node.nodeValue) continue;
+      node.nodeValue = node.nodeValue
+        .replace(/\bYOU\b/gi, "TEAM A")
+        .replace(/\bCPU\b/gi, "TEAM B");
+    }
+  }
+
+  styleScoreboard();
+  const observer = new MutationObserver(() => styleScoreboard());
+  observer.observe(document.body, {
+    childList: true, subtree: true, characterData: true
+  });
+
+  let marker = null;
+  let markerScene = null;
+  let cameraAdjusted = false;
+
+  function getPlayerGroup(player) {
+    return player && player.g && player.g.position ? player.g : null;
+  }
+
+  function tick() {
+    try {
+      // Add a bright ring around the human-controlled player.
+      if (typeof you !== "undefined" && typeof scene !== "undefined") {
+        const group = getPlayerGroup(you);
+
+        if (group && (!marker || markerScene !== scene)) {
+          if (marker && marker.parent) marker.parent.remove(marker);
+
+          marker = new THREE.Mesh(
+            new THREE.RingGeometry(0.27, 0.39, 28),
+            new THREE.MeshBasicMaterial({
+              color: 0xfff23d,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.98,
+              depthWrite: false
+            })
+          );
+          marker.rotation.x = -Math.PI / 2;
+          marker.renderOrder = 20;
+          markerScene = scene;
+          scene.add(marker);
+        }
+
+        if (marker && group) {
+          marker.position.set(
+            group.position.x,
+            group.position.y + 0.035,
+            group.position.z
+          );
+          const pulse = 1 + Math.sin(performance.now() * 0.006) * 0.045;
+          marker.scale.set(pulse, pulse, pulse);
+        }
+      }
+
+      // A slightly wider field of view can show more of the pitch.
+      if (!cameraAdjusted && typeof camera !== "undefined" &&
+          camera && camera.isPerspectiveCamera) {
+        camera.fov = Math.max(camera.fov || 50, 60);
+        camera.updateProjectionMatrix();
+        cameraAdjusted = true;
+      }
+    } catch (err) {
+      // Avoid breaking the original game's animation if a variable differs.
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  requestAnimationFrame(tick);
+})();
+
 </script>
 </body>
 </html>
