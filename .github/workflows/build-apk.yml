@@ -1,0 +1,54 @@
+name: Build Football Arena 3D APK
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout game
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Copy current web game into APK
+        shell: bash
+        run: |
+          set -e
+          mkdir -p android/app/src/main/assets/www
+          find android/app/src/main/assets/www -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name '.github' \
+            ! -name 'android' \
+            ! -name 'index_backup_*.html' \
+            ! -name '*.py' \
+            -exec cp -a {} android/app/src/main/assets/www/ \;
+          test -f android/app/src/main/assets/www/index.html
+
+      - name: Build debug APK
+        run: gradle -p android assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Football-Arena-3D-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
